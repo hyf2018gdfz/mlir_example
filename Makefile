@@ -8,7 +8,7 @@ gemm_lowered.mlir: gemm.mlir
 	mlir-opt gemm.mlir \
 	  --affine-loop-normalize \
 	  --affine-parallelize \
-	  -lower-affine \
+	  --lower-affine \
 	  --convert-scf-to-cf \
 	  --convert-cf-to-llvm \
 	  --convert-math-to-llvm \
@@ -34,11 +34,15 @@ libgemm.so: gemm.o
 tensor_gemm_lowered.mlir: tensor_gemm.mlir
 	mlir-opt tensor_gemm.mlir \
 	  --one-shot-bufferize="bufferize-function-boundaries" \
-	  --convert-linalg-to-loops \
+	  --convert-linalg-to-parallel-loops \
+	  --convert-scf-to-openmp="num-threads=12" \
+	  --convert-openmp-to-llvm \
 	  --convert-scf-to-cf \
-	  --convert-arith-to-llvm \
 	  --convert-cf-to-llvm \
-	  --convert-to-llvm \
+	  --convert-math-to-llvm \
+	  --convert-arith-to-llvm \
+	  --finalize-memref-to-llvm \
+	  --convert-func-to-llvm \
 	  --reconcile-unrealized-casts \
 	  -o tensor_gemm_lowered.mlir
 

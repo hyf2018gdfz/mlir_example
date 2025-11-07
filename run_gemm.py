@@ -1,5 +1,6 @@
 import ctypes
 import numpy as np
+import time
 from ctypes import (
     c_void_p,
     c_longlong,
@@ -48,38 +49,26 @@ def memref2d_to_numpy(desc: MemRef2DDescriptor, dtype=np.float32) -> np.ndarray:
     return flat.reshape(shape).copy()
 
 
-M, N, K = 4, 8, 6
+M, N, K = 128, 512, 256
 
 
-def call_inplace_gemm(
+def call_gemm(
     lib_path: str, func_name: str, A: np.ndarray, B: np.ndarray, C: np.ndarray
 ) -> np.ndarray:
-    """Call an MLIR-generated in-place GEMM that writes into C (3-arg function)."""
     module = ctypes.CDLL(lib_path)
     func = getattr(module, func_name)
     A_m = numpy_to_memref2d(A)
     B_m = numpy_to_memref2d(B)
     C_m = numpy_to_memref2d(C)
     func.argtypes = [POINTER(MemRef2DDescriptor)] * 3
+    t0 = time.perf_counter()
     func(ctypes.byref(A_m), ctypes.byref(B_m), ctypes.byref(C_m))
-    return C
+    t1 = time.perf_counter()
+    elapsed = t1 - t0
+    return C, elapsed
 
 
-def call_returning_gemm(
-    lib_path: str, func_name: str, A: np.ndarray, B: np.ndarray
-) -> np.ndarray:
-    """Call an MLIR-generated GEMM that returns a MemRef descriptor (2-arg function -> ret desc)."""
-    module = ctypes.CDLL(lib_path)
-    func = getattr(module, func_name)
-    func.argtypes = [POINTER(MemRef2DDescriptor), POINTER(MemRef2DDescriptor)]
-    func.restype = MemRef2DDescriptor
-    A_m = numpy_to_memref2d(A)
-    B_m = numpy_to_memref2d(B)
-    ret = func(ctypes.byref(A_m), ctypes.byref(B_m))
-    return memref2d_to_numpy(ret)
-
-
-def verify_results(C_mlir: np.ndarray, C_numpy: np.ndarray, tol: float = 1e-5) -> bool:
+def verify_results(C_mlir: np.ndarray, C_numpy: np.ndarray, tol: float = 1e-4) -> bool:
     if C_mlir.shape != C_numpy.shape:
         print(f"Shape mismatch: MLIR {C_mlir.shape} vs NumPy {C_numpy.shape}")
         return False
@@ -99,24 +88,65 @@ def run_gemm():
     np.random.seed(42)
     A = np.random.randn(M, K).astype(np.float32)
     B = np.random.randn(K, N).astype(np.float32)
-    C = np.zeros((M, N), dtype=np.float32)
 
-    print("Running in-place gemm (libgemm.so)")
-    C_mlir = call_inplace_gemm("./libgemm.so", "_mlir_ciface_gemm", A, B, C)
-    C_numpy = A @ B
+    mlir_times = []
+    numpy_times = []
+    C_mlir = None
+    C_numpy = None
+
+    print("Running memref gemm (libgemm.so) 20 iterations")
+    for _ in range(20):
+        C = np.zeros((M, N), dtype=np.float32)
+        C_mlir, t_mlir = call_gemm("./libgemm.so", "_mlir_ciface_gemm", A, B, C)
+        mlir_times.append(t_mlir)
+    time.sleep(0.5)
+
+    for _ in range(20):
+        t0 = time.perf_counter()
+        C_numpy = A @ B
+        t1 = time.perf_counter()
+        numpy_times.append(t1 - t0)
+    time.sleep(0.5)
+
+    avg_mlir = sum(mlir_times) / len(mlir_times)
+    avg_numpy = sum(numpy_times) / len(numpy_times)
+    print(f"Avg MLIR memref gemm time over 20 runs: {avg_mlir*1000:.3f} ms")
+    print(f"Avg NumPy gemm time over 20 runs: {avg_numpy*1000:.3f} ms")
+
     return A, B, C_mlir, C_numpy
 
 
 def run_anogemm():
-    np.random.seed(45)
+    np.random.seed(42)
     A = np.random.randn(M, K).astype(np.float32)
     B = np.random.randn(K, N).astype(np.float32)
 
-    print("Running returning gemm (libtensor_gemm.so)")
-    C_mlir = call_returning_gemm(
-        "./libtensor_gemm.so", "_mlir_ciface_tensor_gemm", A, B
-    )
-    C_numpy = A @ B
+    mlir_times = []
+    numpy_times = []
+    C_mlir = None
+    C_numpy = None
+
+    print("Running tensor gemm (libtensor_gemm.so) 20 iterations")
+    for _ in range(20):
+        C = np.zeros((M, N), dtype=np.float32)
+        C_mlir, t_mlir = call_gemm(
+            "./libtensor_gemm.so", "_mlir_ciface_tensor_gemm", A, B, C
+        )
+        mlir_times.append(t_mlir)
+    time.sleep(0.5)
+
+    for _ in range(20):
+        t0 = time.perf_counter()
+        C_numpy = A @ B
+        t1 = time.perf_counter()
+        numpy_times.append(t1 - t0)
+    time.sleep(0.5)
+
+    avg_mlir = sum(mlir_times) / len(mlir_times)
+    avg_numpy = sum(numpy_times) / len(numpy_times)
+    print(f"Avg MLIR tensor gemm time over 20 runs: {avg_mlir*1000:.3f} ms")
+    print(f"Avg NumPy gemm time over 20 runs: {avg_numpy*1000:.3f} ms")
+
     return A, B, C_mlir, C_numpy
 
 
